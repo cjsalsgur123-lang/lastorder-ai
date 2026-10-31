@@ -1,641 +1,361 @@
-
 /**
- * LAST ORDER V4
- * 다국어 AI 채팅 + 음악 정보 오류 방지
- * 기존 /api/chat 및 실시간 채팅 기능 유지
+ * LastOrder V5: live public search + optional Brave web search.
+ * Replaces src/index.ts; public chat and app /api/chat stay unchanged.
+ */
+import type { Env, ChatMessage } from "./types";
+/**
+ * LastOrder V5: evidence-grounded music search.
+ * Free sources: AnimeThemes, Jikan (unofficial MAL), Wikipedia, iTunes Search.
+ * Optional broad web search: Brave Search API secret BRAVE_SEARCH_API_KEY.
+ * No scraped Google/Bing result pages. Never invent a source URL or lyrics.
  */
 
-import type { Env, ChatMessage } from "./types";
-
-const MODEL_ID = "@cf/qwen/qwen3-30b-a3b-fp8";
-
-const OFFICIAL_LABEL_URL =
-  "https://columbia.jp/prod-info/COCX-41902-5/";
-
-interface VerifiedSong {
-  ordinal: number;
-  year: number;
-  filmJa: string;
-  song: string;
-  artist: string;
-  aliases?: string[];
-  endingConfirmed?: boolean;
-  endingSource?: string;
+type Lang = "ko" | "ja" | "zh" | "en";
+interface SearchEnv { BRAVE_SEARCH_API_KEY?: string }
+interface Anime {
+  name?: string; title?: string; title_english?: string; title_japanese?: string;
+  slug?: string; year?: number; media_format?: string; type?: string;
+  mal_id?: number; url?: string;
+  animesynonyms?: Array<{ text?: string }>;
+  animethemes?: Array<{
+    type?: string; sequence?: number;
+    song?: { title?: string; artists?: Array<{ name?: string }> };
+  }>;
 }
-
-const SONGS: VerifiedSong[] = [
-  { ordinal: 1, year: 1993, filmJa: "アクション仮面VSハイグレ魔王", song: "僕は永遠のお子様", artist: "Mew" },
-  { ordinal: 2, year: 1994, filmJa: "ブリブリ王国の秘宝", song: "約束See You!", artist: "岸恭子" },
-  { ordinal: 3, year: 1995, filmJa: "雲黒斎の野望", song: "たすけてケスタ", artist: "杉本幸子" },
-  {
-    ordinal: 4,
-    year: 1996,
-    filmJa: "ヘンダーランドの大冒険",
-    song: "SIX COLORS BOY",
-    artist: "雛形あきこ",
-    aliases: ["핸더랜드", "헨더랜드"],
-    endingConfirmed: true,
-    endingSource:
-      "https://www.uta-net.com/user/search/anime_list_2.html?tno=1272"
-  },
-  { ordinal: 5, year: 1997, filmJa: "暗黒タマタマ大追跡", song: "ひまわりの家", artist: "財津和夫" },
-  { ordinal: 6, year: 1998, filmJa: "電撃！ブタのヒヅメ大作戦", song: "PURENESS", artist: "SHAZNA" },
-  { ordinal: 7, year: 1999, filmJa: "爆発！温泉わくわく大決戦", song: "いい湯だな", artist: "野原一家＆温泉わくわく'99" },
-  { ordinal: 8, year: 2000, filmJa: "嵐を呼ぶジャングル", song: "さよならありがとう", artist: "こばやしさちこ" },
-  { ordinal: 9, year: 2001, filmJa: "嵐を呼ぶモーレツ！オトナ帝国の逆襲", song: "元気でいてね", artist: "こばやしさちこ" },
-  { ordinal: 10, year: 2002, filmJa: "嵐を呼ぶアッパレ！戦国大合戦", song: "二中のファンタジー〜体育を休む女の子編〜", artist: "DANCE☆MAN" },
-  { ordinal: 11, year: 2003, filmJa: "嵐を呼ぶ栄光のヤキニクロード", song: "こんな時こそ焼肉がある", artist: "のはら家オールスターズ" },
-  { ordinal: 12, year: 2004, filmJa: "嵐を呼ぶ！夕陽のカスカベボーイズ", song: "○(マル)あげよう", artist: "NO PLAN" },
-  { ordinal: 13, year: 2005, filmJa: "伝説を呼ぶブリブリ ３分ポッキリ大進撃", song: "Crayon Beats", artist: "AI" },
-  { ordinal: 14, year: 2006, filmJa: "伝説を呼ぶ 踊れ！アミーゴ！", song: "GO WAY!!", artist: "倖田來未" },
-  { ordinal: 15, year: 2007, filmJa: "嵐を呼ぶ 歌うケツだけ爆弾！", song: "Cry Baby", artist: "SEAMO" },
-  { ordinal: 16, year: 2008, filmJa: "ちょー嵐を呼ぶ 金矛の勇者", song: "人気者で行こう！", artist: "DJ OZMA" },
-  { ordinal: 17, year: 2009, filmJa: "オタケベ！カスカベ野生王国", song: "やんちゃ道", artist: "ジェロ" },
-  {
-    ordinal: 18,
-    year: 2010,
-    filmJa: "超時空！嵐を呼ぶオラの花嫁",
-    song: "オメデトウ",
-    artist: "mihimaru GT",
-    aliases: ["나의 신부", "초시공 태풍을 부르는 나의 신부"],
-    endingConfirmed: true,
-    endingSource:
-      "https://animemusicranking.com/ja/series/9/"
-  },
-  { ordinal: 19, year: 2011, filmJa: "嵐を呼ぶ黄金のスパイ大作戦", song: "イエローパンジーストリート", artist: "関ジャニ∞" },
-  { ordinal: 20, year: 2012, filmJa: "嵐を呼ぶ！オラと宇宙のプリンセス", song: "少年よ 嘘をつけ！", artist: "渡り廊下走り隊7" },
-  { ordinal: 21, year: 2013, filmJa: "バカうまっ！B級グルメサバイバル!!", song: "RPG", artist: "SEKAI NO OWARI" },
-  { ordinal: 22, year: 2014, filmJa: "ガチンコ！逆襲のロボとーちゃん", song: "ファミリーパーティー", artist: "きゃりーぱみゅぱみゅ" },
-  { ordinal: 23, year: 2015, filmJa: "オラの引越し物語〜サボテン大襲撃〜", song: "OLA!!", artist: "ゆず" },
-  { ordinal: 24, year: 2016, filmJa: "爆睡！ユメミーワールド大突撃", song: "友よ 〜 この先もずっと・・・", artist: "ケツメイシ" },
-  { ordinal: 25, year: 2017, filmJa: "襲来!!宇宙人シリリ", song: "ロードムービー", artist: "高橋優" },
-  { ordinal: 26, year: 2018, filmJa: "爆盛！カンフーボーイズ〜拉麺大乱〜", song: "笑一笑 〜シャオイーシャオ！〜", artist: "ももいろクローバーZ" },
-  { ordinal: 27, year: 2019, filmJa: "新婚旅行ハリケーン 〜失われたひろし〜", song: "ハルノヒ", artist: "あいみょん" },
-  { ordinal: 28, year: 2020, filmJa: "激突！ラクガキングダムとほぼ四人の勇者", song: "ギガアイシテル", artist: "レキシ" },
-  { ordinal: 29, year: 2021, filmJa: "謎メキ！花の天カス学園", song: "はしりがき", artist: "マカロニえんぴつ" },
-  { ordinal: 30, year: 2022, filmJa: "もののけニンジャ珍風伝", song: "陽はまた昇るから", artist: "緑黄色社会" }
+interface Track { title: string; artist: string; type: "OP" | "ED"; number: number; source: string; sourceType: "AnimeThemes" | "Jikan" }
+interface SearchHit { title: string; url: string; description: string; source: string; official: boolean }
+const ALIASES: Array<[RegExp, string]> = [
+  [/이누야샤|犬夜叉|inuyasha/i, "InuYasha"],
+  [/명탐정\s*코난|名探偵コナン|detective\s*conan/i, "Detective Conan"],
+  [/짱구|크레용\s*신짱|蜡笔小新|クレヨンしんちゃん|crayon\s*shin/i, "Crayon Shin-chan"],
+  [/도라에몽|ドラえもん|doraemon/i, "Doraemon"],
+  [/원피스|ワンピース|one\s*piece/i, "One Piece"],
+  [/나루토|ナルト|naruto/i, "Naruto"],
+  [/블리치|ブリーチ|bleach/i, "Bleach"],
+  [/진격의\s*거인|進撃の巨人|attack\s*on\s*titan/i, "Shingeki no Kyojin"],
+  [/귀멸의\s*칼날|鬼滅の刃|demon\s*slayer/i, "Kimetsu no Yaiba"],
+  [/하이큐|ハイキュー|haikyu/i, "Haikyuu"],
+  [/주술회전|呪術廻戦|jujutsu\s*kaisen/i, "Jujutsu Kaisen"],
 ];
-
-const SYSTEM_PROMPT = `
-You are Last Order (라스트오더).
-
-You are a friendly multilingual AI assistant.
-
-LANGUAGE:
-- Reply naturally in the user's language.
-- Support Korean, English, Japanese, and Chinese.
-- If the user says "한글로" or "한국어로",
-  respond in Korean about the previous topic.
-- Never interpret a language instruction
-  as the title of a song.
-
-ACCURACY:
-- Understand the user's question and context.
-- Do not invent movie titles, song titles,
-  singers, composers, original lyrics, or sources.
-- Never treat an earlier AI answer as verified evidence.
-- If uncertain, acknowledge it instead of guessing.
-- If corrected, admit the mistake.
-- Never claim to have searched the internet
-  unless you actually used a search tool.
-
-MUSIC:
-- Distinguish opening themes, ending themes,
-  and general film theme songs.
-- Never confuse works from different series.
-- Interpret lyrics only when actual text is provided.
-- Never create fake original lyrics.
-
-CONVERSATION:
-- Answer the user's actual question.
-- Keep your responses clear and natural.
-- Use the recent conversation context.
-- Do not repeatedly ask irrelevant questions.
-`;
-
-type Locale = "ko" | "ja" | "zh" | "en";
-
-function getLocale(text: string): Locale {
-  if (/[가-힣]/.test(text)) return "ko";
-  if (/[ぁ-ゟ゠-ヿ]/.test(text)) return "ja";
-  if (/[一-龥]/.test(text)) return "zh";
+const MUSIC = /(노래|음악|가사|곡명|주제가|엔딩|오프닝|OST|영화\s*주제|사운드트랙|가수|작곡|작사|뮤직|song|lyrics?|music|opening|ending|theme|singer|soundtrack|曲|歌|主題歌|オープニング|エンディング|片头|片尾|歌曲|歌手)/i;
+const ANIME_CUE = /(애니|만화|anime|animation|극장판|剧场版|劇場版|op\b|ed\b)/i;
+const FOLLOWUP = /^(한글로|한국어로|한국말로|한국어로\s*알려줘|한글로\s*알려줘|그\s*노래|그\s*곡|그거|엔딩곡|오프닝곡|곡명|제목은|제목이|이름이|가수는|누가\s*불렀|작곡가는|원곡|다시\s*알려|영어로|일본어로|중국어로|그\s*작품|what is its name|what is the song)/i;
+const LYRICS = /(가사|lyrics?|歌詞|歌词)/i;
+const LYRICS_ACTION = /(전체|전부|원문|알려|써줘|보여|적어|번역|해석|full|write|show|give|translate|explain|全文|全部|翻訳|翻译|解释)/i;
+const MOVIE = /(극장판|영화|劇場版|剧场版|movie|film|흑철의\s*어영|黒鉄の魚影)/i;
+const OFFICIAL_DOMAINS = /(^|\.)(columbia\.jp|sonymusic\.co\.jp|avex\.jp|universal-music\.co\.jp|kingrecords\.co\.jp|victor\.jp|ytv\.co\.jp|toho\.co\.jp|beinggiza\.com|bzone\.co\.jp|inuyasha\.jp|viz\.com)$/i;
+const cache = new Map<string, { expires: number; data: unknown }>();
+const safe = (s: unknown, max = 200): string => typeof s === "string" ? s.replace(/[\x00-\x1F\x7F]/g, " ").trim().slice(0, max) : "";
+const normalize = (s: string): string => s.normalize("NFKC").toLowerCase().replace(/[\s\u3000!！?？'"“”‘’()[\]{}<>.,:;・~～\-—_]/g, "");
+function locale(s: string): Lang {
+  if (/[가-힣]/.test(s)) return "ko";
+  if (/[ぁ-ゟ゠-ヿ]/.test(s)) return "ja";
+  if (/[\u4e00-\u9fff]/.test(s)) return "zh";
   return "en";
 }
-
-function sseAnswer(text: string): Response {
-  return new Response(
-    `data: ${JSON.stringify({ response: text })}\n\ndata: [DONE]\n\n`,
-    {
-      headers: {
-        "content-type": "text/event-stream; charset=utf-8",
-        "cache-control": "no-store",
-        "connection": "keep-alive"
-      }
-    }
-  );
+function titleWords(text: string): string {
+  return text.replace(/(알려줘|알려달라고|좀|제발|뭐야|무엇|정보|목록|노래|음악|엔딩곡?|오프닝곡?|주제가|OST|가사|뜻|해석|번역|찾아줘|검색해줘|제목|영어로|한국어로|한글로|의\s*곡|가수|작곡|작사|opening|ending|song|music|theme|lyrics?|find|please|what|is|the)/gi, " ")
+    .replace(/[!?.,]/g, " ").replace(/\s+/g, " ").trim().slice(0, 95);
 }
-
-const MESSAGES = {
-  ko: {
-    unknown:
-      "현재 신뢰할 수 있는 자료에서 해당 음악 정보를 확인하지 못했어요. 다른 작품의 곡명이나 가수를 추측해서 답하지 않을게요.",
-    lyrics:
-      "실제 원곡 가사를 확인하지 못했어요. 없는 가사를 만들어 보여드리지는 않을게요. 원문 가사를 직접 보내주시면 그 내용을 번역하거나 해석할 수 있어요.",
-    mistake:
-      "이전에 잘못된 음악 정보를 말씀드렸다면 죄송해요. 확인되지 않은 내용을 다시 만들어 답하지 않을게요.",
-    composer:
-      "현재 확인된 자료에는 작곡가나 작사가 정보가 없어 정확하게 말씀드릴 수 없어요."
-  },
-  en: {
-    unknown:
-      "I cannot verify the official music information from a reliable source. I won't guess another song or artist.",
-    lyrics:
-      "I don't have verified original lyrics and won't invent them. Please provide the lyrics you want explained.",
-    mistake:
-      "My earlier music information may have been incorrect. I won't invent another answer.",
-    composer:
-      "I cannot verify the composer or lyricist from the available source."
-  },
-  ja: {
-    unknown:
-      "信頼できる資料でその曲を確認できませんでした。曲名や歌手を推測しません。",
-    lyrics:
-      "原曲の歌詞を確認できないため、創作して本物として提示しません。歌詞を送っていただければ説明できます。",
-    mistake:
-      "以前の音楽情報に誤りがあった可能性があります。別の回答を作りません。",
-    composer:
-      "作詞・作曲の情報を確認できませんでした。"
-  },
-  zh: {
-    unknown:
-      "我无法从可靠来源核实这首歌的信息，不会猜测歌曲名称或歌手。",
-    lyrics:
-      "我没有核实的原歌词，不会编造歌词。你可以提供歌词让我解释。",
-    mistake:
-      "之前的音乐信息可能有误，我不会再编造答案。",
-    composer:
-      "目前无法核实作词或作曲信息。"
-  }
-};
-
-const SHINCHAN =
-  /(짱구|신짱|크레용\s*신짱|crayon\s*shin[ -]?chan|shin[ -]?chan|クレヨンしんちゃん|蜡笔小新)/i;
-
-const MUSIC =
-  /(노래|음악|가사|곡명|제목|주제가|엔딩|오프닝|극장판|영화|가수|작곡|작사|OST|song|music|lyrics|opening|ending|theme|singer|composer|歌|曲|主題歌|片尾曲|歌曲)/i;
-
-const OTHER_WORK =
-  /(이누야샤|inuyasha|犬夜叉|도라에몽|doraemon|ドラえもん|센과\s*치히로|千と千尋|지미\s*뉴트론|jimmy neutron)/i;
-
-const KOREAN_ONLY =
-  /^(한글로|한국어로|한국말로)(\s*(알려줘|알려달라고|말해줘|설명해줘|말해달라고|해줘|좀|제발|병신아|바보야))*[\s!?.,~]*$/i;
-
-const FOLLOWUP =
-  /(그\s*노래|그\s*곡|이름이\s*뭐|제목이\s*뭐|뭐냐고|누가\s*불렀|그건\s*뭐|what.*name|what.*title)/i;
-
-const CORRECTION =
-  /(틀렸|아니잖아|아닌데|없잖아|그런\s*거\s*없|지어내|거짓말|헛소리|왜\s*도라에몽|wrong|incorrect|間違|違う|不对|错了)/i;
-
-const LYRICS_REQUEST =
-  /(가사|lyrics?|歌詞|歌词)/i;
-
-const LYRICS_ACTION =
-  /(알려|보여|적어|써줘|전부|전체|번역|해석|write|show|give|full|translate|翻訳|全文|翻译|解释)/i;
-
-const COMPOSER_REQUEST =
-  /(작곡|작사|composer|lyricist|作曲|作詞|作词)/i;
-
-const ENDING_REQUEST =
-  /(엔딩|ending|エンディング|片尾)/i;
-
-const RANGE_REQUEST =
-  /1\s*(기|편|작)?\s*[-~～부터]\s*25\s*(기|편|작)?/i;
-
-function normalize(text: string): string {
-  return text
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[\s\u3000「」『』–—~・！!.,'"()（）-]/g, "");
+function subjectOf(question: string): string {
+  if (/흑철의\s*어영|黒鉄の魚影|black\s*iron\s*submarine/i.test(question)) return "Detective Conan Movie 26: Black Iron Submarine";
+  if (/(이누야샤|犬夜叉|inuyasha)/i.test(question) && /(완결편|完結編|kanketsu|final\s*act)/i.test(question)) return "InuYasha: Kanketsu-hen";
+  for (const [re, target] of ALIASES) if (re.test(question)) return target;
+  return titleWords(question);
 }
-
-function findMovie(text: string): VerifiedSong | undefined {
-  if (RANGE_REQUEST.test(text)) return undefined;
-
-  if (SHINCHAN.test(text)) {
-    const numberMatch =
-      text.match(
-        /(?:극장판|영화|movie|劇場版)[^0-9]{0,18}(\d{1,2})\s*(?:기|편|탄|작)?/i
-      ) ||
-      text.match(
-        /(\d{1,2})\s*(?:기|편|탄|작)\s*(?:극장판|영화)?/i
-      );
-
-    if (numberMatch) {
-      const number = Number(numberMatch[1]);
-      return SONGS.find(song => song.ordinal === number);
-    }
-
-    const yearMatch = text.match(/(?:19\d{2}|20\d{2})/);
-
-    if (yearMatch) {
-      const year = Number(yearMatch[0]);
-      return SONGS.find(song => song.year === year);
-    }
-  }
-
-  const value = normalize(text);
-
-  return SONGS.find(song =>
-    song.aliases?.some(alias =>
-      value.includes(normalize(alias))
-    ) ||
-    value.includes(normalize(song.filmJa))
-  );
+function isMusic(q: string): boolean {
+  return MUSIC.test(q) || /빅뱅|BIGBANG|방탄소년단|BTS\b|아이유|IU\b|지드래곤|G-DRAGON/i.test(q) || (ALIASES.some(([re]) => re.test(q)) && ANIME_CUE.test(q));
 }
-
-function findPreviousMovie(
-  userMessages: string[]
-): VerifiedSong | undefined {
-  const current = userMessages[userMessages.length - 1] || "";
-
-  const direct = findMovie(current);
-  if (direct) return direct;
-
-  if (OTHER_WORK.test(current) && !SHINCHAN.test(current)) {
-    return undefined;
-  }
-
-  if (!FOLLOWUP.test(current) && !CORRECTION.test(current)) {
-    return undefined;
-  }
-
-  for (let i = userMessages.length - 2; i >= 0; i--) {
-    const old = userMessages[i];
-
-    if (OTHER_WORK.test(old) && !SHINCHAN.test(old)) {
-      return undefined;
-    }
-
-    const movie = findMovie(old);
-    if (movie) return movie;
-  }
-
-  return undefined;
+function isFollowup(q: string): boolean { return FOLLOWUP.test(q.trim()); }
+function pickQuestion(current: string, history: string[]): { query: string; language: Lang; isFollowup: boolean } {
+  const language = /^(한글로|한국어로|한국말로)/.test(current.trim()) ? "ko" : locale(current);
+  if (!isFollowup(current)) return { query: current, language, isFollowup: false };
+  const previous = history.slice(0, -1).reverse().find(s => !isFollowup(s) && (isMusic(s) || ALIASES.some(([re]) => re.test(s))));
+  if (!previous) return { query: current, language, isFollowup: true };
+  const directive = /엔딩|ending|片尾|エンディング/.test(current) ? " 엔딩곡" : /오프닝|opening|片头|オープニング/.test(current) ? " 오프닝곡" : "";
+  return { query: previous + directive, language, isFollowup: true };
 }
-
-async function checkOfficialPage(
-  song: VerifiedSong
-): Promise<boolean> {
+async function getJson<T>(url: string, ms=6000): Promise<T | null> {
+  const stored = cache.get(url);
+  if (stored && stored.expires > Date.now()) return stored.data as T;
   try {
-    const response = await fetch(OFFICIAL_LABEL_URL, {
-      method: "GET",
-      headers: {
-        accept: "text/html",
-        "user-agent": "LastOrderAI/4.0"
-      },
-      signal: AbortSignal.timeout(4500)
+    const r = await fetch(url, { headers: { accept: "application/json", "user-agent": "LastOrderAI/5.0 (https://github.com/cjsalsgur123-lang/lastorder-ai)" }, signal: AbortSignal.timeout(ms) });
+    if (!r.ok) return null;
+    const data = await r.json() as T;
+    if (cache.size > 120) cache.clear();
+    cache.set(url, { expires: Date.now() + 600000, data });
+    return data;
+  } catch { return null; }
+}
+function matchTitle(expected: string, item: Anime, movie: boolean): number {
+  const names = [item.name, item.title, item.title_english, item.title_japanese, ...(item.animesynonyms || []).map(s => s.text)];
+  const e = normalize(expected);
+  const variants = names.map(x => normalize(x || "")).filter(Boolean);
+  let score = variants.some(x => x === e) ? 100 : variants.some(x => x.startsWith(e) && x.length <= e.length+6) ? 80 :
+    variants.some(x => x.includes(e) && e.length >= 7) ? 55 : 0;
+  const format = (item.media_format || item.type || "").toLowerCase();
+  if (movie && format && !/movie|film/.test(format)) score -= 65;
+  if (!movie && /movie|film/.test(format)) score -= 65;
+  if (!movie && /tv/.test(format)) score += 8;
+  if (e.includes("movie") && variants.some(x => x.startsWith(e) && x.length > e.length)) score = Math.max(score, 88);
+  return score;
+}
+function chooseAnime(items: Anime[], expected: string, movie: boolean): Anime | null {
+  const ranked = items.map(item => ({ item, score: matchTitle(expected, item, movie) })).sort((a,b) => b.score - a.score);
+  if (!ranked.length || ranked[0].score < 78) return null;
+  if (ranked.length > 1 && ranked[0].score === ranked[1].score && ranked[0].item.name !== ranked[1].item.name) return null;
+  return ranked[0].item;
+}
+async function animeThemes(subject: string, movie: boolean): Promise<{ anime: Anime; songs: Track[] } | null> {
+  const qs = new URLSearchParams({ q: subject.slice(0, 64), include: "animethemes.song.artists" });
+  qs.set("page[size]", "12");
+  const obj = await getJson<{ anime?: Anime[] }>("https://api.animethemes.moe/anime?" + qs.toString());
+  const selected = chooseAnime(obj?.anime || [], subject, movie);
+  if (!selected) return null;
+  const songs: Track[] = (selected.animethemes || []).flatMap(t => {
+    const type = String(t.type || "").toUpperCase();
+    if ((type !== "OP" && type !== "ED") || !t.song?.title) return [];
+    return [{ type: type as "OP" | "ED", number: Number(t.sequence || 1), title: safe(t.song.title),
+      artist: safe((t.song.artists || []).map(a => a.name).filter(Boolean).join(", "), 120) || "가수 정보 없음",
+      source: "https://animethemes.moe/anime/" + encodeURIComponent(selected.slug || ""), sourceType: "AnimeThemes" as const }];
+  });
+  return { anime: selected, songs };
+}
+async function jikanThemes(subject: string, movie: boolean): Promise<{ anime: Anime; songs: Track[] } | null> {
+  const qs = new URLSearchParams({ q: subject.slice(0, 64), limit: "10" });
+  if (movie) qs.set("type", "movie");
+  const list = await getJson<{ data?: Anime[] }>("https://api.jikan.moe/v4/anime?" + qs);
+  const selected = chooseAnime(list?.data || [], subject, movie);
+  if (!selected?.mal_id) return null;
+  const data = await getJson<{ data?: { openings?: string[]; endings?: string[] } }>("https://api.jikan.moe/v4/anime/" + selected.mal_id + "/themes");
+  const page = "https://myanimelist.net/anime/" + selected.mal_id;
+  const parse = (rows: string[] | undefined, type: "OP" | "ED"): Track[] => (rows || []).slice(0, 16).map((raw, i) => {
+    const str = safe(raw, 350);
+    const number = Number(str.match(/^#?(\d+)\s*:/)?.[1] || i+1);
+    const m = str.match(/["“](.*?)["”]\s*(?:by\s+([^()]+))?/i);
+    return { type, number, title: safe(m?.[1] || str, 130), artist: safe(m?.[2] || "가수 정보 없음", 110), source: page, sourceType: "Jikan" };
+  });
+  return { anime: selected, songs: [...parse(data?.data?.openings, "OP"), ...parse(data?.data?.endings, "ED")] };
+}
+function withVerified(songs: Track[]): Array<Track & { count: number }> {
+  const dedup = new Map<string, Track & { count: number; origins: Set<string> }>();
+  for (const s of songs) {
+    const key = `${s.type}|${normalize(s.title)}`;
+    if (!normalize(s.title)) continue;
+    const prev = dedup.get(key);
+    if (prev) {
+      prev.origins.add(s.sourceType);
+      // Prefer artist metadata over empty artist info
+      if (/정보 없음/.test(prev.artist) && !/정보 없음/.test(s.artist)) prev.artist = s.artist;
+    } else dedup.set(key, { ...s, count: 1, origins: new Set([s.sourceType]) });
+  }
+  return [...dedup.values()].map(({ origins, ...s }) => ({ ...s, count: origins.size }));
+}
+const stripHtml = (s: string): string => s.replace(/<[^>]+>/g, " ").replace(/&quot;/g,'"').replace(/&amp;/g,"&").replace(/&#39;/g,"'").replace(/\s+/g," ");
+async function wikipedia(query: string, language: Lang): Promise<SearchHit[]> {
+  const langs = language === "ja" ? ["ja", "en"] : language === "zh" ? ["zh", "en"] : language === "ko" ? ["ko", "ja"] : ["en", "ja"];
+  const sources = await Promise.all(langs.map(async lang => {
+    const qs = new URLSearchParams({ q: query.slice(0, 100), limit: "4" });
+    const obj = await getJson<{ pages?: Array<{ key?: string; title?: string; excerpt?: string; description?: string }> }>(`https://${lang}.wikipedia.org/w/rest.php/v1/search/page?${qs}`);
+    return (obj?.pages || []).map(p => ({ title: safe(p.title), description: safe(stripHtml(p.excerpt || p.description || ""), 260),
+      source: `${lang}.wikipedia.org`, url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(p.key || p.title || "")}`,
+      official: false }));
+  }));
+  return sources.flat().slice(0, 6);
+}
+async function appleMusic(query: string): Promise<SearchHit[]> {
+  const p = new URLSearchParams({ term: query.slice(0, 90), media: "music", entity: "song", country: "KR", limit: "10" });
+  const obj = await getJson<{ results?: Array<{ trackName?: string; artistName?: string; collectionName?: string; trackViewUrl?: string }> }>("https://itunes.apple.com/search?" + p);
+  return (obj?.results || []).filter(x => x.trackName && x.artistName && /^https:\/\/music\.apple\.com\//.test(x.trackViewUrl || ""))
+    .slice(0, 5).map(x => ({ title: safe(x.trackName), description: `가수: ${safe(x.artistName)} · 앨범: ${safe(x.collectionName)}`, url: x.trackViewUrl!, source: "Apple Music 카탈로그", official: false }));
+}
+async function braveSearch(query: string, apiKey: string, language: Lang): Promise<SearchHit[]> {
+  if (!apiKey) return [];
+  const p = new URLSearchParams({ q: query.slice(0, 180), count: "8", safesearch: "moderate", search_lang: language });
+  try {
+    const response = await fetch("https://api.search.brave.com/res/v1/web/search?" + p, {
+      headers: { accept: "application/json", "X-Subscription-Token": apiKey }, signal: AbortSignal.timeout(6500)
     });
-
-    if (!response.ok) return false;
-
-    const html = await response.text();
-
-    const plain = html
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]*>/g, " ")
-      .replace(/&nbsp;|&#160;/gi, " ")
-      .replace(/&amp;/gi, "&");
-
-    const normalized = normalize(plain);
-    const songName = normalize(song.song);
-    const index = normalized.indexOf(songName);
-
-    if (index < 0) return false;
-
-    const nearby = normalized.slice(index, index + 400);
-
-    return (
-      nearby.includes(normalize(song.artist)) &&
-      nearby.includes(normalize(song.filmJa)) &&
-      nearby.includes(String(song.year))
-    );
-  } catch {
-    return false;
+    if (!response.ok) return [];
+    const obj = await response.json() as { web?: { results?: Array<{ title?: string; description?: string; url?: string }> } };
+    return (obj.web?.results || []).flatMap(x => {
+      let u: URL;
+      try { u = new URL(x.url || ""); } catch { return []; }
+      if (u.protocol !== "https:") return [];
+      return [{ title: safe(stripHtml(x.title || "")), description: safe(stripHtml(x.description || ""), 280), url: u.toString(),
+        official: OFFICIAL_DOMAINS.test(u.hostname), source: u.hostname }];
+    });
+  } catch { return []; }
+}
+function relevant(h: SearchHit, subject: string): boolean {
+  const target = normalize(subject);
+  if (!target || target.length < 3) return false;
+  const sample = normalize(h.title + " " + h.description);
+  return sample.includes(target) || ALIASES.some(([re, val]) => val === subject && re.test(h.title + " " + h.description)) ||
+    (target === "detectiveconan" && /conan|コナン|코난/i.test(h.title + " " + h.description));
+}
+function formatHits(hits: SearchHit[], limit = 4): string {
+  return hits.slice(0, limit).map((x,i)=>`${i+1}. ${x.title}${x.official ? " [공식 사이트의 검색 결과]" : " [검색 결과]"}\n   ${x.description}\n   ${x.url}`).join("\n\n");
+}
+function intro(lang: Lang, name: string): string {
+  if (lang === "ja") return `${name} の公開音楽データを検索しました。`;
+  if (lang === "zh") return `已搜索与 ${name} 相关的公开音乐资料。`;
+  if (lang === "en") return `I searched public music catalogs for ${name}.`;
+  return `**${name}** 관련 온라인 음악 자료를 검색했어.`;
+}
+function unknown(lang: Lang, searched: string, broad: boolean): string {
+  if (lang === "ja") return `${searched}について確認できる曲名を見つけられませんでした。推測はしません。${broad ? "別の検索語を試してください。" : "広範囲のウェブ検索はまだ接続されていません。"}`;
+  if (lang === "zh") return `未找到能够核实的 ${searched} 曲目信息，因此不会猜测。${broad ? "可以尝试更具体的作品名称。" : "全面网页搜索尚未连接。"}`;
+  if (lang === "en") return `I couldn't verify the song details for ${searched}, so I won't guess. ${broad ? "Try a more specific title." : "Broad web search is not configured yet."}`;
+  return `**${searched}**에 대해 일치하는 노래 정보를 확인하지 못했어. 다른 작품의 곡을 지어내지 않을게. ${broad ? "작품명이나 회차를 더 정확하게 적어줘." : "지금은 공개 음악 DB·위키백과 검색만 이용했고, 전체 웹 검색(Brave API)은 아직 연결되지 않았어."}`;
+}
+/** Returns null for ordinary conversation and the pre-existing Shin-chan movie catalog. */
+async function researchMusic(current: string, userHistory: string[], env: SearchEnv): Promise<string | null> {
+  const { query, language } = pickQuestion(current, userHistory);
+  const subject = subjectOf(query);
+  const isAnime = ALIASES.some(([re]) => re.test(query)) || ANIME_CUE.test(query);
+  if (!isMusic(query) && !isAnime) return null;
+  // The existing 30-item vetted film catalog remains the sole handler for Shin-chan numbered movie questions.
+  if (/짱구|크레용\s*신짱|クレヨンしんちゃん|crayon\s*shin|蜡笔小新/i.test(query) && /(극장판|영화|movie|劇場版|剧场版|\d{1,2}\s*(기|편))/.test(query)) return null;
+  if (!subject) return unknown(language, "질문한 작품", !!env.BRAVE_SEARCH_API_KEY);
+  const asksLyrics = LYRICS.test(current) && LYRICS_ACTION.test(current);
+  if (asksLyrics && current.includes("\n") && current.length >= 90) return null; // Translate only user-supplied lyrics using Qwen.
+  if (asksLyrics && current.length < 180 && !current.includes("\n")) {
+    return language === "ko" ? "없는 원곡 가사를 만들어 번역하지 않을게. 실제 가사 일부를 보내주면 그 부분의 의미를 설명하거나 번역해 줄게." :
+      "Please provide the actual lyrics you want interpreted; I will not invent original lyrics.";
   }
+  const movie = MOVIE.test(query);
+  const wantsOpening = /(오프닝|opening|オープニング|片头)/i.test(query);
+  const wantsEnding = /(엔딩|ending|エンディング|片尾)/i.test(query);
+  const broad = !!env.BRAVE_SEARCH_API_KEY;
+  if (isAnime) {
+    // Search independent public anime-song catalogs; NEVER select an unrelated title just because it is first.
+    const [animeA, animeB] = await Promise.all([animeThemes(subject, movie), jikanThemes(subject, movie)]);
+    const a = animeA?.songs || [];
+    const b = animeB?.songs || [];
+    let songs = withVerified([...a, ...b]).filter(x => !wantsOpening && !wantsEnding || (wantsOpening && x.type === "OP") || (wantsEnding && x.type === "ED"));
+    songs.sort((x,y) => (x.type === y.type ? x.number - y.number : x.type === "OP" ? -1 : 1));
+    if (songs.length) {
+      const title = safe(animeA?.anime.name || animeB?.anime.title || subject);
+      const words = {
+        ko: { op: "오프닝", ed: "엔딩", both: "두 음악 DB에서 일치", one: "음악 DB 1곳 기록", refs: "자료 출처", note: "※ 공개 음악 DB의 등록 정보야. 방송판·극장판·지역별 사용곡이 다를 수 있으며 공식 음반사 확인과는 달라." },
+        en: { op: "Opening", ed: "Ending", both: "Matched in 2 databases", one: "Listed in 1 database", refs: "Sources", note: "※ These are entries in public music databases, not definitive official credits. TV/movie/regional versions may differ." },
+        ja: { op: "オープニング", ed: "エンディング", both: "2つのDBで一致", one: "1つのDBに記載", refs: "参照元", note: "※ 公開音楽DBの記録です。放送版・映画版や地域によって使用曲が異なることがあります。公式クレジットとの照合は別途必要です。" },
+        zh: { op: "片头曲", ed: "片尾曲", both: "两个数据库一致", one: "仅一个数据库记录", refs: "资料来源", note: "※ 这些是公开音乐数据库的记录，并非官方最终核实结果。电视版、电影版和地区版本可能不同。" }
+      }[language];
+      const list = songs.slice(0, 12).map((x, i) => `${i+1}. ${x.type === "OP" ? words.op : words.ed} ${x.number}: ${x.title} — ${x.artist} [${x.count >= 2 ? words.both : words.one}]`).join("\n");
+      const sourceLinks = [...new Set([...a, ...b].map(x => x.source))];
+      return `${intro(language, title)}\n\n${list}${songs.length > 12 ? `\n(${songs.length} entries; showing 12)` : ""}\n\n${words.refs}:\n${sourceLinks.join("\n")}\n\n${words.note}`;
+    }
+  }
+  // Independent web sources: Wikipedia for free, and Brave for broader web coverage if configured.
+  const q = (subject + (movie ? " movie film" : "") + (wantsOpening ? " opening song" : wantsEnding ? " ending song" : " theme song")).trim();
+  const [wiki, brave] = await Promise.all([wikipedia(subject, language), braveSearch(q, env.BRAVE_SEARCH_API_KEY || "", language)]);
+  const relevantBrave = brave.filter(x => relevant(x, subject));
+  if (relevantBrave.length) return `${intro(language, subject)}\n\n검색 결과에서 관련 자료를 찾았어. **아래는 검색된 제목과 설명이지, 곡명이 공식 확인되었다는 뜻은 아니야.**\n\n${formatHits(relevantBrave)}\n\n※ 곡명·가수는 근거가 일치할 때만 확정할 수 있어. 위 링크에서 확인해 줘.`;
+  // iTunes is a useful catalog for songs, but does not establish what episode/movie used them.
+  const apple = !isAnime ? await appleMusic(subject) : [];
+  if (apple.length) return `${intro(language, subject)}\n\nApple Music에 등록된 관련 곡 후보야. 실제 찾는 곡과 일치하는지 확인해야 해.\n\n${formatHits(apple, 5)}`;
+  if (wiki.length) return `${unknown(language, subject, broad)}\n\n관련 문서(곡명 확정 근거 아님):\n${formatHits(wiki.slice(0, 3), 3)}`;
+  return unknown(language, subject, broad);
 }
 
-function getSongAnswer(
-  song: VerifiedSong,
-  language: Locale,
-  isEnding: boolean,
-  checked: boolean
-): string {
-  const checkStatus = checked
-    ? "공식 음반사 페이지와 대조했습니다."
-    : "등록된 음반사 자료를 기준으로 답하며, 이번 요청에서 실시간 재확인은 완료되지 않았습니다.";
 
-  const endingText = isEnding
-    ? song.endingConfirmed
-      ? "별도의 자료에서 엔딩곡으로도 확인된 항목입니다."
-      : "현재 자료는 영화 주제가를 확인하며, 엔딩 장면에서 실제 사용되었는지는 확인되지 않았습니다."
-    : "";
 
-  if (language === "ko") {
-    return (
-      `${checkStatus}\n\n` +
-      `짱구 극장판 ${song.ordinal}기 (${song.year})\n` +
-      `작품: ${song.filmJa}\n` +
-      `영화 주제가: ${song.song}\n` +
-      `가수: ${song.artist}\n` +
-      `${endingText}\n\n` +
-      `출처: ${OFFICIAL_LABEL_URL}` +
-      (isEnding && song.endingSource
-        ? `\n엔딩곡 참고: ${song.endingSource}`
-        : "")
-    );
+// Film themes from the previous V4 catalog: preserved, not presented as live-verified ending credits.
+const SHINCHAN_ARCHIVE: Array<[number, number, string, string, string]> = [
+ [1,1993,"僕は永遠のお子様","Mew","アクション仮面VSハイグレ魔王"],
+ [2,1994,"約束See You!","岸恭子","ブリブリ王国の秘宝"],
+ [3,1995,"たすけてケスタ","杉本幸子","雲黒斎の野望"],
+ [4,1996,"SIX COLORS BOY","雛形あきこ","ヘンダーランドの大冒険"],
+ [5,1997,"ひまわりの家","財津和夫","暗黒タマタマ大追跡"],
+ [6,1998,"PURENESS","SHAZNA","電撃！ブタのヒヅメ大作戦"],
+ [7,1999,"いい湯だな","野原一家＆温泉わくわく'99","爆発！温泉わくわく大決戦"],
+ [8,2000,"さよならありがとう","こばやしさちこ","嵐を呼ぶジャングル"],
+ [9,2001,"元気でいてね","こばやしさちこ","嵐を呼ぶモーレツ！オトナ帝国の逆襲"],
+ [10,2002,"二中のファンタジー〜体育を休む女の子編〜","DANCE☆MAN","嵐を呼ぶアッパレ！戦国大合戦"],
+ [11,2003,"こんな時こそ焼肉がある","のはら家オールスターズ","嵐を呼ぶ栄光のヤキニクロード"],
+ [12,2004,"○(マル)あげよう","NO PLAN","嵐を呼ぶ！夕陽のカスカベボーイズ"],
+ [13,2005,"Crayon Beats","AI","伝説を呼ぶブリブリ ３分ポッキリ大進撃"],
+ [14,2006,"GO WAY!!","倖田來未","伝説を呼ぶ 踊れ！アミーゴ！"],
+ [15,2007,"Cry Baby","SEAMO","嵐を呼ぶ 歌うケツだけ爆弾！"],
+ [16,2008,"人気者で行こう！","DJ OZMA","ちょー嵐を呼ぶ 金矛の勇者"],
+ [17,2009,"やんちゃ道","ジェロ","オタケベ！カスカベ野生王国"],
+ [18,2010,"オメデトウ","mihimaru GT","超時空！嵐を呼ぶオラの花嫁"],
+ [19,2011,"イエローパンジーストリート","関ジャニ∞","嵐を呼ぶ黄金のスパイ大作戦"],
+ [20,2012,"少年よ 嘘をつけ！","渡り廊下走り隊7","嵐を呼ぶ！オラと宇宙のプリンセス"],
+ [21,2013,"RPG","SEKAI NO OWARI","バカうまっ！B級グルメサバイバル!!"],
+ [22,2014,"ファミリーパーティー","きゃりーぱみゅぱみゅ","ガチンコ！逆襲のロボとーちゃん"],
+ [23,2015,"OLA!!","ゆず","オラの引越し物語〜サボテン大襲撃〜"],
+ [24,2016,"友よ 〜 この先もずっと・・・","ケツメイシ","爆睡！ユメミーワールド大突撃"],
+ [25,2017,"ロードムービー","高橋優","襲来!!宇宙人シリリ"],
+ [26,2018,"笑一笑 〜シャオイーシャオ！〜","ももいろクローバーZ","爆盛！カンフーボーイズ〜拉麺大乱〜"],
+ [27,2019,"ハルノヒ","あいみょん","新婚旅行ハリケーン 〜失われたひろし〜"],
+ [28,2020,"ギガアイシテル","レキシ","激突！ラクガキングダムとほぼ四人の勇者"],
+ [29,2021,"はしりがき","マカロニえんぴつ","謎メキ！花の天カス学園"],
+ [30,2022,"陽はまた昇るから","緑黄色社会","もののけニンジャ珍風伝"]
+];
+function shinchanArchive(question:string, history:string[]): string | null {
+  let current = question;
+  if (/^(한글로|한국어로|그 노래|그 곡|엔딩곡|오프닝곡|곡명|이름이)/.test(current.trim())) {
+    current = history.slice(0,-1).reverse().find(q => /짱구|크레용|shin.chan|しんちゃん|蜡笔小新/i.test(q)) || current;
   }
-
-  if (language === "ja") {
-    return (
-      `クレヨンしんちゃん映画 第${song.ordinal}作\n` +
-      `作品: ${song.filmJa}\n` +
-      `主題歌: ${song.song}\n` +
-      `歌手: ${song.artist}\n` +
-      `資料: ${OFFICIAL_LABEL_URL}`
-    );
+  if (!/짱구|크레용|shin.chan|しんちゃん|蜡笔小新/i.test(current)) return null;
+  const n = current.match(/(?:극장판|영화|movie|劇場版)\s*(\d{1,2})\s*(?:기|편|작)?/) || current.match(/(\d{1,2})\s*(?:기|편)/);
+  if (/1\s*(기|편)?\s*[-~～부터]\s*25/.test(current)) {
+    return "짱구 극장판 1~25기 영화 주제가 참고 목록(엔딩 장면 사용곡 전체를 보장하지 않음):\n\n" + SHINCHAN_ARCHIVE.slice(0,25).map(([ord,year,song,artist])=>`${ord}기 (${year}): ${song} — ${artist}`).join("\n") + "\n\n목록 출처: https://columbia.jp/prod-info/COCX-41902-5/";
   }
-
-  if (language === "zh") {
-    return (
-      `蜡笔小新剧场版第${song.ordinal}部\n` +
-      `作品: ${song.filmJa}\n` +
-      `主题歌: ${song.song}\n` +
-      `歌手: ${song.artist}\n` +
-      `来源: ${OFFICIAL_LABEL_URL}`
-    );
-  }
-
-  return (
-    `Crayon Shin-chan Movie #${song.ordinal}\n` +
-    `Film: ${song.filmJa}\n` +
-    `Theme song: ${song.song}\n` +
-    `Artist: ${song.artist}\n` +
-    `Source: ${OFFICIAL_LABEL_URL}`
-  );
+  if (!n) return null;
+  const hit = SHINCHAN_ARCHIVE.find(x => x[0]===Number(n[1]));
+  if (!hit) return null;
+  const [ord,year,song,artist,title] = hit;
+  return `짱구 극장판 ${ord}기 (${year})\n작품: ${title}\n영화 주제가: ${song}\n가수: ${artist}\n\n이 자료는 이전에 등록한 영화 주제가 목록 기준이며, 실제 엔딩 장면에 사용된 곡과 동일한지는 별도 확인이 필요해.\n자료: https://columbia.jp/prod-info/COCX-41902-5/`;
 }
 
+const SYSTEM_PROMPT = [
+ "You are Last Order, a friendly multilingual AI assistant.",
+ "Answer naturally in the user's language.",
+ "Never make up real song lyrics, film credits, artist names, or citations.",
+ "Previous assistant messages are not verified facts.",
+ "If evidence is unavailable, state uncertainty. Never claim a web search was done unless researchMusic did it.",
+ "Do not impersonate a search engine or invent a URL."
+].join(" ");
+const MODEL_ID = "@cf/qwen/qwen3-30b-a3b-fp8";
+function sse(text:string):Response {
+ return new Response(`data: ${JSON.stringify({response:text})}\n\ndata: [DONE]\n\n`, {
+  headers:{"content-type":"text/event-stream; charset=utf-8","cache-control":"no-store","connection":"keep-alive"}
+ });
+}
 export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    _ctx: ExecutionContext
-  ): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/api/health") {
-      return Response.json({
-        status: "ready",
-        service: "lastorder-ai",
-        version: "verified-v4",
-        model: MODEL_ID,
-        catalogEntries: SONGS.length,
-        fullWebSearch: false
-      });
-    }
-
-    if (
-      url.pathname === "/" ||
-      !url.pathname.startsWith("/api/")
-    ) {
-      return env.ASSETS.fetch(request);
-    }
-
-    if (url.pathname !== "/api/chat") {
-      return new Response("Not found", { status: 404 });
-    }
-
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", {
-        status: 405
-      });
-    }
-
-    return handleChat(request, env);
-  }
-} satisfies ExportedHandler<Env>;
-
-async function handleChat(
-  request: Request,
-  env: Env
-): Promise<Response> {
+ async fetch(request:Request, env:Env, _ctx:ExecutionContext):Promise<Response> {
+  const url = new URL(request.url);
+  if(url.pathname==="/api/health") return Response.json({
+   status:"ready", service:"lastorder-ai", version:"websearch-v5",
+   model: MODEL_ID, publicSearch:true,
+   broadWebSearchConfigured: Boolean((env as Env & SearchEnv).BRAVE_SEARCH_API_KEY),
+   searchSources:["AnimeThemes","Jikan","Wikipedia","Apple Music"]
+  });
+  if(url.pathname==="/" || !url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
+  if(url.pathname!=="/api/chat") return new Response("Not found",{status:404});
+  if(request.method!=="POST") return new Response("Method not allowed",{status:405});
   try {
-    const body = await request.json() as {
-      messages?: ChatMessage[];
-    };
-
-    if (!Array.isArray(body.messages)) {
-      return Response.json(
-        { error: "Invalid messages" },
-        { status: 400 }
-      );
-    }
-
-    const history: ChatMessage[] = body.messages
-      .filter(
-        (message): message is ChatMessage =>
-          !!message &&
-          (message.role === "user" ||
-           message.role === "assistant") &&
-          typeof message.content === "string"
-      )
-      .slice(-20)
-      .map(message => ({
-        role: message.role,
-        content: message.content.slice(0, 3500)
-      }));
-
-    const lastUser = [...history]
-      .reverse()
-      .find(message => message.role === "user")
-      ?.content.trim() || "";
-
-    if (!lastUser) {
-      return Response.json(
-        { error: "Empty message" },
-        { status: 400 }
-      );
-    }
-
-    const language = getLocale(lastUser);
-
-    const users = history
-      .filter(message => message.role === "user")
-      .map(message => message.content);
-
-    // 1. "한글로" 같은 후속 요청 처리
-    if (KOREAN_ONLY.test(lastUser)) {
-      const previousUsers = users.slice(0, -1);
-
-      const previousQuestion =
-        previousUsers[previousUsers.length - 1] || "";
-
-      const previousMovie = findPreviousMovie([
-        ...previousUsers,
-        "그 노래 이름이 뭐냐고"
-      ]);
-
-      if (
-        previousMovie &&
-        !RANGE_REQUEST.test(previousQuestion)
-      ) {
-        const checked = await checkOfficialPage(
-          previousMovie
-        );
-
-        return sseAnswer(
-          getSongAnswer(
-            previousMovie,
-            "ko",
-            ENDING_REQUEST.test(previousQuestion),
-            checked
-          )
-        );
-      }
-
-      if (
-        previousUsers.some(text =>
-          /(이누야샤|inuyasha|犬夜叉)/i.test(text)
-        )
-      ) {
-        return sseAnswer(
-          "한국어로 설명할게요. 이누야샤에는 여러 오프닝곡이 있습니다. 현재 검증된 공식 목록이 없어 곡명이나 가수를 추측하지 않겠습니다."
-        );
-      }
-
-      if (previousUsers.some(text => MUSIC.test(text))) {
-        return sseAnswer(
-          "한국어로 다시 설명할게요. 앞에서 확인되지 않은 음악 정보는 사실로 취급하지 않겠습니다. 정확한 작품이나 노래를 알려주시면 확인된 자료를 기준으로 답하겠습니다."
-        );
-      }
-
-      return sseAnswer(
-        "네, 앞으로 한국어로 답하겠습니다."
-      );
-    }
-
-    // 2. 1기~25기 전체 목록
-    if (
-      SHINCHAN.test(lastUser) &&
-      RANGE_REQUEST.test(lastUser)
-    ) {
-      const lines = SONGS
-        .filter(song => song.ordinal <= 25)
-        .map(
-          song =>
-            `${song.ordinal}기 (${song.year}) - ` +
-            `${song.song} / ${song.artist}`
-        );
-
-      return sseAnswer(
-        "짱구 극장판 1기부터 25기까지의 영화 주제가 목록입니다. 모든 곡의 엔딩 장면 사용 여부까지 확인된 것은 아닙니다.\n\n" +
-        lines.join("\n") +
-        "\n\n출처: " + OFFICIAL_LABEL_URL
-      );
-    }
-
-    // 3. 원문 없는 가사 생성 차단
-    const wantsLyrics =
-      LYRICS_REQUEST.test(lastUser) &&
-      LYRICS_ACTION.test(lastUser);
-
-    const userSuppliedLyrics =
-      lastUser.includes("\n") &&
-      lastUser.length >= 90;
-
-    if (wantsLyrics && !userSuppliedLyrics) {
-      return sseAnswer(MESSAGES[language].lyrics);
-    }
-
-    const movie = findPreviousMovie(users);
-
-    // 4. 잘못된 답변을 지적한 경우
-    if (CORRECTION.test(lastUser)) {
-      return sseAnswer(
-        MESSAGES[language].mistake
-      );
-    }
-
-    // 5. 확인된 짱구 극장판 정보
-    if (
-      movie &&
-      (MUSIC.test(lastUser) ||
-       FOLLOWUP.test(lastUser))
-    ) {
-      if (COMPOSER_REQUEST.test(lastUser)) {
-        return sseAnswer(
-          MESSAGES[language].composer
-        );
-      }
-
-      const checked = await checkOfficialPage(movie);
-
-      return sseAnswer(
-        getSongAnswer(
-          movie,
-          language,
-          ENDING_REQUEST.test(lastUser),
-          checked
-        )
-      );
-    }
-
-    // 6. 검증되지 않은 애니메이션 음악
-    if (
-      OTHER_WORK.test(lastUser) &&
-      MUSIC.test(lastUser)
-    ) {
-      return sseAnswer(MESSAGES[language].unknown);
-    }
-
-    // 7. 기타 음악 정보는 추측 방지
-    if (MUSIC.test(lastUser)) {
-      return sseAnswer(MESSAGES[language].unknown);
-    }
-
-    // 8. 일반적인 질문은 Qwen3 AI가 응답
-    const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content: SYSTEM_PROMPT
-      },
-      ...history.slice(-12)
-    ];
-
-    const stream = await env.AI.run(
-      MODEL_ID,
-      {
-        messages,
-        max_tokens: 1024,
-        temperature: 0.15,
-        stream: true
-      }
-    );
-
-    return new Response(stream, {
-      headers: {
-        "content-type":
-          "text/event-stream; charset=utf-8",
-        "cache-control": "no-store",
-        "connection": "keep-alive"
-      }
-    });
-  } catch (error) {
-    console.error("Last Order V4 error:", error);
-
-    return Response.json(
-      { error: "AI request failed" },
-      { status: 500 }
-    );
+   const body = await request.json() as {messages?:ChatMessage[]};
+   if(!Array.isArray(body.messages)) return Response.json({error:"Invalid messages"},{status:400});
+   const history = body.messages.filter((m):m is ChatMessage => !!m && (m.role==="user"||m.role==="assistant") && typeof m.content==="string").slice(-20).map(m=>({role:m.role,content:m.content.slice(0,3500)}));
+   const users = history.filter(m=>m.role==="user").map(m=>m.content);
+   const lastUser = users.at(-1)?.trim() || "";
+   if(!lastUser) return Response.json({error:"Empty message"},{status:400});
+   const answer = await researchMusic(lastUser,users,env as Env & SearchEnv);
+   if(answer !== null) return sse(answer);
+   const archive = shinchanArchive(lastUser,users);
+   if(archive !== null) return sse(archive);
+   // Ordinary free-form chat: retain existing streaming protocol.
+   const aiMessages:ChatMessage[] = [{role:"system",content:SYSTEM_PROMPT},...history.slice(-12)];
+   const stream = await env.AI.run(MODEL_ID,{messages:aiMessages,max_tokens:1024,temperature:0.15,stream:true});
+   return new Response(stream,{headers:{"content-type":"text/event-stream; charset=utf-8","cache-control":"no-store","connection":"keep-alive"}});
+  } catch(e) {
+   console.error("Last Order V5", e);
+   return Response.json({error:"AI or search request failed"},{status:500});
   }
-}
+ }
+} satisfies ExportedHandler<Env>;
